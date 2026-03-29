@@ -240,4 +240,26 @@ class AndroidServiceInstance extends ServiceInstance {
     final result = await _channel.invokeMethod('openApp');
     return result ?? false;
   }
+
+  /// Acquire a transfer-scoped partial wake lock with an auto-release timeout.
+  ///
+  /// Use this during active file transfers (e.g., ZMODEM) to keep the CPU
+  /// awake. The wake lock auto-releases after [timeoutMs] milliseconds as a
+  /// safety net to prevent stuck wake locks. Default timeout is 2 minutes.
+  ///
+  /// This is Android-only. Callers should guard with `Platform.isAndroid`.
+  Future<void> acquireTransferWakeLock({int timeoutMs = 120000}) async {
+    await _channel.invokeMethod('acquireTransferWakeLock', {
+      'timeout': timeoutMs,
+    });
+  }
+
+  /// Release the transfer-scoped wake lock.
+  ///
+  /// Safe to call even if the lock is not held or has already timed out.
+  ///
+  /// This is Android-only. Callers should guard with `Platform.isAndroid`.
+  Future<void> releaseTransferWakeLock() async {
+    await _channel.invokeMethod('releaseTransferWakeLock');
+  }
 }

@@ -40,7 +40,10 @@ public class BackgroundService extends Service implements MethodChannel.MethodCa
     private static final String TAG = "BackgroundService";
     private static final String LOCK_NAME = BackgroundService.class.getName()
             + ".Lock";
+    private static final String TRANSFER_LOCK_NAME = BackgroundService.class.getName()
+            + ".TransferLock";
     public static volatile WakeLock lockStatic = null; // notice static
+    private volatile WakeLock transferWakeLock = null;
     AtomicBoolean isRunning = new AtomicBoolean(false);
     private FlutterEngine backgroundEngine;
     private MethodChannel methodChannel;
@@ -186,7 +189,6 @@ public class BackgroundService extends Service implements MethodChannel.MethodCa
         return START_NOT_STICKY;
     }
 
-    @SuppressLint("WakelockTimeout")
     private void runService() {
         try {
             if (isRunning.get() || (backgroundEngine != null && !backgroundEngine.getDartExecutor().isExecutingDart())) {
@@ -195,7 +197,12 @@ public class BackgroundService extends Service implements MethodChannel.MethodCa
             }
 
             Log.v(TAG, "Starting flutter engine for background service");
-            getLock(getApplicationContext()).acquire();
+            // REMOVED: getLock(getApplicationContext()).acquire();
+            // The permanent wake lock is not needed for BLE companion apps.
+            // The foreground service notification keeps the process alive.
+            // BLE GATT callbacks provide transient CPU wake via hardware interrupts.
+            // Use acquireTransferWakeLock() / releaseTransferWakeLock() for
+            // scoped CPU wakefulness during active file transfers only.
 
             updateNotificationInfo();
 
@@ -341,11 +348,54 @@ public class BackgroundService extends Service implements MethodChannel.MethodCa
                 return;
 
             }
+
+            if (method.equalsIgnoreCase("acquireTransferWakeLock")) {
+                JSONObject arg = (JSONObject) call.arguments;
+                long timeoutMs = arg.optLong("timeout", 120000L); // default 2 minutes
+                acquireTransferWakeLock(timeoutMs);
+                result.success(true);
+                return;
+            }
+
+            if (method.equalsIgnoreCase("releaseTransferWakeLock")) {
+                releaseTransferWakeLock();
+                result.success(true);
+                return;
+            }
         } catch (JSONException e) {
             Log.e(TAG, e.getMessage());
             e.printStackTrace();
         }
 
         result.notImplemented();
+    }
+
+    /**
+     * Acquire a transfer-scoped partial wake lock with a timeout.
+     * Used during active ZMODEM file transfers to keep the CPU awake.
+     * The wake lock auto-releases after timeoutMs to prevent stuck wake locks.
+     */
+    @SuppressLint("WakelockTimeout")
+    private void acquireTransferWakeLock(long timeoutMs) {
+        releaseTransferWakeLock(); // release any existing lock first
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        transferWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TRANSFER_LOCK_NAME);
+        transferWakeLock.setReferenceCounted(false);
+        transferWakeLock.acquire(timeoutMs);
+        Log.i(TAG, "Transfer wake lock acquired (timeout: " + timeoutMs + "ms)");
+    }
+
+    /**
+     * Release the transfer-scoped wake lock.
+     * Safe to call even if the lock is not held or has already timed out.
+     */
+    private void releaseTransferWakeLock() {
+        if (transferWakeLock != null) {
+            if (transferWakeLock.isHeld()) {
+                transferWakeLock.release();
+                Log.i(TAG, "Transfer wake lock released");
+            }
+            transferWakeLock = null;
+        }
     }
 }
